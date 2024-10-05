@@ -1,0 +1,108 @@
+#include "mbed.h"
+
+// Definición de pines
+#define DS   D4  // Datos seriales al registro de desplazamiento
+#define SHCP D2  // Reloj del registro de desplazamiento
+#define STCP D3  // Reloj del latch
+
+// Salidas digitales
+DigitalOut SerialData(DS);
+DigitalOut RegisterClk(SHCP);
+DigitalOut LatchClk(STCP);
+DigitalOut led(LED1);
+
+// Variables globales
+uint32_t secuencias[][24] = {
+    {0x000001, 0x000002, 0x000004, 0x000008, 0x000010, 0x000020, 0x000040, 0x000080, 
+     0x000100, 0x000200, 0x000400, 0x000800, 0x001000, 0x002000, 0x004000, 0x008000,
+     0x010000, 0x020000, 0x040000, 0x080000, 0x100000, 0x200000, 0x400000, 0x800000},  // Secuencia 1: De izquierda a derecha
+    {0x800000, 0x400000, 0x200000, 0x100000, 0x080000, 0x040000, 0x020000, 0x010000,
+     0x008000, 0x004000, 0x002000, 0x001000, 0x000800, 0x000400, 0x000200, 0x000100,
+     0x000080, 0x000040, 0x000020, 0x000010, 0x000008, 0x000004, 0x000002, 0x000001},  // Secuencia 2: De derecha a izquierda
+    {0x800001, 0xC00003, 0xE00007, 0xF0000F, 0xF8001F, 0xF8001F, 0xFC003F, 0xFE007F,
+    0xFF00FF, 0xFF81FF, 0xFFC3FF, 0xFFE7FF, 0xFFFFFF, 0xFFE7FF,0xFFC3FF,0xFF81FF ,
+     0xFF00FF,0xFE007F,0xFC003F,0xF8001F, 0xF8001F, 0xF0000F, 0xE00007,0xC00003},  // Secuencia 3: Patrón especial
+    {0x555555, 0xAAAAAAAA, 0x555555, 0xAAAAAAAA, 0x555555, 0xAAAAAAAA, 0x555555, 0xAAAAAAAA,
+     0x555555, 0xAAAAAAAA, 0x555555, 0xAAAAAAAA, 0x555555, 0xAAAAAAAA, 0x555555, 0xAAAAAAAA},  // Secuencia 4: Alternante entre LEDs pares e impares
+    {0xFFFFFF, 0x7FFFFF, 0x3FFFFF, 0x1FFFFF, 0x0FFFFF, 0x07FFFF, 0x03FFFF, 0x01FFFF, 0x00FFFF, 0x007FFF,
+     0x003FFF, 0x001FFF, 0x000FFF, 0x0007FF, 0x0003FF, 0x0001FF, 0x0000FF, 0x7F, 0x3F, 0x1F, 0xF, 0x7, 0x3, 0x01}   // Secuencia 5: Todos encendidos y se apagan gradualmente
+};
+int num_secuencias = 5;
+int indice_secuencia = 0;
+int tiempo_por_paso = 437;  // Tiempo en milisegundos por paso de la secuencia (437 ms por paso para completar 7 segundos)
+
+// Prototipos de funciones
+void shift_data(uint32_t data);
+void load_data(uint32_t data);
+void clean(void);
+void send_data(void);
+
+// Hilos y herramientas del sistema operativo
+Thread T_send_data(osPriorityNormal, 4096, NULL, NULL);
+
+int main()
+{
+    // Inicialización de los pines
+    SerialData = 0;
+    RegisterClk = 0;
+    LatchClk = 0;
+    clean();  // Limpiar todos los LEDs al inicio
+    ThisThread::sleep_for(1s);  // Esperar un segundo antes de comenzar las secuencias
+
+    // Iniciar el hilo para manejar las secuencias de LEDs
+    T_send_data.start(send_data);
+
+    // Mantener el LED1 parpadeando como indicador de actividad
+    while (true) {
+        led = !led;
+        ThisThread::sleep_for(1s);
+    }
+}
+
+void shift_data(uint32_t data)
+{
+    for (int i = 0; i < 24; i++)
+    {
+        SerialData = (data & 0x800000) ? 1 : 0;  // Enviar el bit más significativo primero
+        RegisterClk = 0;
+        ThisThread::sleep_for(1ms);  // Breve pausa para estabilidad
+        RegisterClk = 1;
+        ThisThread::sleep_for(0ms);  // Estabilización
+        data <<= 1;  // Desplazar los bits a la izquierda
+    }
+}
+
+void load_data(uint32_t data)
+{
+    LatchClk = 0;  // Preparar para la carga de datos
+    shift_data(data);  // Desplazar los datos al registro de desplazamiento
+    LatchClk = 1;  // Actualizar la salida del latch
+}
+
+void clean(void)
+{
+    load_data(0x000000);  // Apagar todos los LEDs
+}
+
+void send_data(void)
+{
+    while (true)
+    {
+        // Obtener la secuencia actual
+        uint32_t* secuencia_actual = secuencias[indice_secuencia];
+        int tamano_secuencia = sizeof(secuencias[indice_secuencia]) / sizeof(secuencia_actual[0]);
+
+        // Recorrer la secuencia
+        for (int A = 0; A < tamano_secuencia; A++)
+        {
+            load_data(secuencia_actual[A]);  // Cargar los datos al registro de desplazamiento
+            ThisThread::sleep_for(100ms);  // Esperar entre cada paso
+        }
+
+        // Avanzar a la siguiente secuencia después de completar 24 pasos
+        indice_secuencia++;
+        if (indice_secuencia >= num_secuencias) {
+            indice_secuencia = 0;  // Reiniciar a la primera secuencia si llegamos al final
+        }
+    }
+}
